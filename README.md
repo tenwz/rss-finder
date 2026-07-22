@@ -83,7 +83,7 @@ Since this app is built with SvelteKit, it's compatible with multiple runtimes. 
 
 ### Evaluate a Site for Discovery
 
-**POST** `/api/evaluate-site`
+**POST** `/api/evaluate`
 
 ```json
 {
