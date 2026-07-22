@@ -11,6 +11,7 @@
 		"prepare": "svelte-kit sync || echo ''",
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
+		"test": "vitest run",
 		"format": "prettier --write .",
 		"lint": "prettier --check . && eslint ."
 	},
@@ -34,7 +35,8 @@
 		"tailwindcss": "^4.0.0",
 		"typescript": "^5.0.0",
 		"typescript-eslint": "^8.20.0",
-		"vite": "^7.0.4"
+		"vite": "^7.0.4",
+		"vitest": "^4.1.10"
 	},
 	"pnpm": {
 		"onlyBuiltDependencies": [
@@ -42,6 +44,8 @@
 		]
 	},
 	"dependencies": {
-		"feedfinder-ts": "^1.0.3"
+		"cheerio": "^1.1.2",
+		"feedfinder-ts": "^1.0.3",
+		"tldts": "^7.4.9"
 	}
 }
