@@ -28,7 +28,8 @@ export const POST: RequestHandler = async ({ request }) => {
 	}
 
 	try {
-		return json(await evaluateSite(normalizedUrl));
+		const evaluation = await evaluateSite(normalizedUrl);
+		return json({ recommended: evaluation.recommended });
 	} catch (error) {
 		console.error(`Error evaluating site ${normalizedUrl}:`, error);
 		return json({ error: 'Failed to evaluate target website' }, { status: 502 });

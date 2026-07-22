@@ -98,33 +98,15 @@ does not attempt to judge the author or the site's intrinsic worth.
 
 ```json
 {
-	"url": "https://example.com/",
-	"recommended": true,
-	"score": 78,
-	"reasons": ["many_content_entries", "original_content_variety"],
-	"signals": {
-		"generator": "Hugo 0.150",
-		"sampledPosts": 12,
-		"siteBuildingPosts": 1,
-		"tutorialPosts": 2,
-		"selfHostingPosts": 0,
-		"operationalPosts": 1,
-		"repetitivePosts": 0,
-		"themeFeatures": [],
-		"historyYears": 3,
-		"latestPostYear": 2026,
-		"feedPosts": 10,
-		"archivePosts": 0
-	}
+	"recommended": true
 }
 ```
 
 `recommended` is deliberately strict: `true` means the site can be included in discovery
 results and used as a source for further discovery. Uncertain and rejected sites both return
-`false`. The numeric score and signals remain available for debugging. The reusable server-side
-evaluator is exported from `src/lib/server/evaluate-site.ts`. When the homepage advertises a
-same-origin RSS or Atom feed, the evaluator also samples its recent titles; cross-origin feeds
-are deliberately not fetched.
+`false`. Detailed scoring remains internal to the reusable server-side evaluator exported from
+`src/lib/server/evaluate-site.ts`. When the homepage advertises a same-origin RSS or Atom feed,
+the evaluator also samples its recent titles; cross-origin feeds are deliberately not fetched.
 
 **Response:**
 
