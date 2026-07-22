@@ -14,7 +14,13 @@ interface MockPage {
 const originalFetch = globalThis.fetch;
 
 function linkWithFeed(title: string, url: string, feed = new URL('/feed.xml', url).href) {
-	return { title, url, feeds: [{ title: '', link: feed }] };
+	return {
+		title,
+		url,
+		favicon: null,
+		description: null,
+		feeds: [{ title: '', link: feed }]
+	};
 }
 
 function mockPages(pages: Record<string, MockPage>) {
@@ -115,6 +121,35 @@ describe('findLinks', () => {
 		await expect(findLinks('https://source.test/')).resolves.toEqual({
 			links: [linkWithFeed('Feed Blog', 'https://feed.test/', 'https://feed.test/atom.xml')]
 		});
+	});
+
+	it('includes homepage favicon and description without another fetch', async () => {
+		mockPages({
+			'https://source.test/': {
+				body: `<main><h1>Blogroll</h1><h2>Blogs I read</h2>
+					<a href="https://metadata.test/">Metadata Blog</a></main>`
+			},
+			'https://metadata.test/': {
+				body: `<html><head>
+					<meta name="description" content=" Essays about cities and software. ">
+					<link rel="icon" href="/assets/favicon.png">
+					<link rel="alternate" type="application/rss+xml" href="/rss.xml">
+				</head></html>`
+			}
+		});
+
+		await expect(findLinks('https://source.test/')).resolves.toEqual({
+			links: [
+				{
+					title: 'Metadata Blog',
+					url: 'https://metadata.test/',
+					favicon: 'https://metadata.test/assets/favicon.png',
+					description: 'Essays about cities and software.',
+					feeds: [{ title: '', link: 'https://metadata.test/rss.xml' }]
+				}
+			]
+		});
+		expect(fetch).toHaveBeenCalledTimes(2);
 	});
 
 	it('removes feed-enabled sites rejected by the evaluator', async () => {

@@ -91,6 +91,8 @@ evaluator (`recommended: true`) are returned.
 		{
 			"title": "A Recommended Site",
 			"url": "https://recommended.example.org/",
+			"favicon": "https://recommended.example.org/favicon.png",
+			"description": "Essays about cities, technology and culture.",
 			"feeds": [
 				{
 					"title": "A Recommended Site RSS",

@@ -15,6 +15,8 @@ export interface DiscoveredLink {
 }
 
 export interface DiscoveredLinkWithFeeds extends DiscoveredLink {
+	favicon: string | null;
+	description: string | null;
 	feeds: Feed[];
 }
 
@@ -194,6 +196,29 @@ function canonicalizeURL(rawUrl: string, baseUrl: string): URL | null {
 	} catch {
 		return null;
 	}
+}
+
+function extractSiteMetadata(html: string, pageUrl: string) {
+	const $ = load(html);
+	const description = cleanText(
+		$('meta[name="description"]').first().attr('content') ||
+			$('meta[property="og:description"]').first().attr('content') ||
+			$('meta[name="twitter:description"]').first().attr('content') ||
+			''
+	);
+	let favicon: string | null = null;
+
+	$('link[rel][href]').each((_, element) => {
+		if (favicon) return false;
+		const rel = ($(element).attr('rel') || '').toLowerCase().split(/\s+/);
+		if (!rel.includes('icon') && !rel.includes('apple-touch-icon')) return;
+		favicon = canonicalizeURL($(element).attr('href') || '', pageUrl)?.href || null;
+	});
+
+	return {
+		favicon,
+		description: description ? description.slice(0, 300) : null
+	};
 }
 
 function anchorLabel($anchor: ReturnType<CheerioAPI>): string {
@@ -610,7 +635,13 @@ async function discoverQualifiedLinks(links: DiscoveredLink[]): Promise<Discover
 				const evaluation = await evaluate(() =>
 					evaluateSitePage(discovery.page.html, discovery.page.url)
 				);
-				if (evaluation.recommended) results[index] = { ...candidate, feeds: discovery.feeds };
+				if (evaluation.recommended) {
+					results[index] = {
+						...candidate,
+						...extractSiteMetadata(discovery.page.html, discovery.page.url),
+						feeds: discovery.feeds
+					};
+				}
 			} catch {
 				// A failed evaluation excludes this candidate without failing the whole request.
 			}
