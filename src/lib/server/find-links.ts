@@ -7,6 +7,7 @@ import {
 	type Feed
 } from 'feedfinder-ts';
 import { getDomain } from 'tldts';
+import { evaluateSite } from './evaluate-site.js';
 
 export interface DiscoveredLink {
 	title: string;
@@ -44,6 +45,7 @@ const MAX_FEED_PAGE_CHARACTERS = 500_000;
 const MAX_CANDIDATE_PAGES = 3;
 const MAX_FEED_CHECKS = 40;
 const FEED_CHECK_CONCURRENCY = 6;
+const EVALUATION_CONCURRENCY = 4;
 const MAX_RESULTS = 100;
 
 const RECOMMENDATION_PATTERNS = [
@@ -577,6 +579,29 @@ async function attachFeeds(links: DiscoveredLink[]): Promise<DiscoveredLinkWithF
 	return results.filter((result): result is DiscoveredLinkWithFeeds => result !== null);
 }
 
+async function keepRecommendedLinks(
+	links: DiscoveredLinkWithFeeds[]
+): Promise<DiscoveredLinkWithFeeds[]> {
+	const keep = new Array<boolean>(links.length).fill(false);
+	let nextIndex = 0;
+
+	async function worker() {
+		while (nextIndex < links.length) {
+			const index = nextIndex++;
+			try {
+				keep[index] = (await evaluateSite(links[index].url)).recommended;
+			} catch {
+				keep[index] = false;
+			}
+		}
+	}
+
+	await Promise.all(
+		Array.from({ length: Math.min(EVALUATION_CONCURRENCY, links.length) }, () => worker())
+	);
+	return links.filter((_, index) => keep[index]);
+}
+
 export async function findLinks(targetUrl: string): Promise<LinkDiscoveryResult> {
 	const homePage = await fetchPage(targetUrl);
 	const sources: DiscoveredLink[][] = [
@@ -597,5 +622,6 @@ export async function findLinks(targetUrl: string): Promise<LinkDiscoveryResult>
 		sources.push(extractRecommendedLinks(page.html, page.url, targetUrl, true));
 	}
 
-	return { links: await attachFeeds(combineSources(sources)) };
+	const linksWithFeeds = await attachFeeds(combineSources(sources));
+	return { links: await keepRecommendedLinks(linksWithFeeds) };
 }

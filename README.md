@@ -80,7 +80,8 @@ Since this app is built with SvelteKit, it's compatible with multiple runtimes. 
 }
 ```
 
-Only external links whose pages expose a discoverable RSS, Atom or JSON feed are returned.
+Only external links whose pages expose a discoverable RSS, Atom or JSON feed and pass the site
+evaluator (`recommended: true`) are returned.
 
 **Response:**
 

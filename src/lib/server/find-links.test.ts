@@ -1,5 +1,9 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { findLinks } from './find-links.js';
+
+const { evaluateSiteMock } = vi.hoisted(() => ({ evaluateSiteMock: vi.fn() }));
+
+vi.mock('./evaluate-site.js', () => ({ evaluateSite: evaluateSiteMock }));
 
 interface MockPage {
 	body: string;
@@ -33,6 +37,11 @@ function mockPages(pages: Record<string, MockPage>) {
 		})
 	);
 }
+
+beforeEach(() => {
+	evaluateSiteMock.mockReset();
+	evaluateSiteMock.mockResolvedValue({ recommended: true });
+});
 
 afterEach(() => {
 	vi.unstubAllGlobals();
@@ -105,6 +114,24 @@ describe('findLinks', () => {
 
 		await expect(findLinks('https://source.test/')).resolves.toEqual({
 			links: [linkWithFeed('Feed Blog', 'https://feed.test/', 'https://feed.test/atom.xml')]
+		});
+	});
+
+	it('removes feed-enabled sites rejected by the evaluator', async () => {
+		evaluateSiteMock.mockImplementation(async (url: string) => ({
+			recommended: !url.includes('rejected')
+		}));
+		mockPages({
+			'https://source.test/': {
+				body: `<main><h1>Blogroll</h1><h2>Blogs I read</h2><ul>
+					<li><a href="https://accepted.test/">Accepted</a></li>
+					<li><a href="https://rejected.test/">Rejected</a></li>
+				</ul></main>`
+			}
+		});
+
+		await expect(findLinks('https://source.test/')).resolves.toEqual({
+			links: [linkWithFeed('Accepted', 'https://accepted.test/')]
 		});
 	});
 
