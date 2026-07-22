@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { findLinks } from './find-links.js';
 
-const { evaluateSiteMock } = vi.hoisted(() => ({ evaluateSiteMock: vi.fn() }));
+const { evaluateSitePageMock } = vi.hoisted(() => ({ evaluateSitePageMock: vi.fn() }));
 
-vi.mock('./evaluate-site.js', () => ({ evaluateSite: evaluateSiteMock }));
+vi.mock('./evaluate-site.js', () => ({ evaluateSitePage: evaluateSitePageMock }));
 
 interface MockPage {
 	body: string;
@@ -39,8 +39,8 @@ function mockPages(pages: Record<string, MockPage>) {
 }
 
 beforeEach(() => {
-	evaluateSiteMock.mockReset();
-	evaluateSiteMock.mockResolvedValue({ recommended: true });
+	evaluateSitePageMock.mockReset();
+	evaluateSitePageMock.mockResolvedValue({ recommended: true });
 });
 
 afterEach(() => {
@@ -118,7 +118,7 @@ describe('findLinks', () => {
 	});
 
 	it('removes feed-enabled sites rejected by the evaluator', async () => {
-		evaluateSiteMock.mockImplementation(async (url: string) => ({
+		evaluateSitePageMock.mockImplementation(async (_html: string, url: string) => ({
 			recommended: !url.includes('rejected')
 		}));
 		mockPages({
@@ -133,6 +133,11 @@ describe('findLinks', () => {
 		await expect(findLinks('https://source.test/')).resolves.toEqual({
 			links: [linkWithFeed('Accepted', 'https://accepted.test/')]
 		});
+		expect(fetch).toHaveBeenCalledTimes(3);
+		expect(evaluateSitePageMock).toHaveBeenCalledWith(
+			expect.stringContaining('application/rss+xml'),
+			'https://accepted.test/'
+		);
 	});
 
 	it('does not treat ordinary article citations as recommendations', async () => {

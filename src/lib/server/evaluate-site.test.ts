@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { evaluateSite, evaluateSiteHTML } from './evaluate-site.js';
+import { evaluateSite, evaluateSiteHTML, evaluateSitePage } from './evaluate-site.js';
 
 const originalFetch = globalThis.fetch;
 
@@ -455,6 +455,26 @@ describe('evaluateSiteHTML', () => {
 			expect.objectContaining({ redirect: 'follow' })
 		);
 		expect(result.url).toBe('https://source.test/');
+	});
+
+	it('reuses a prefetched homepage without fetching it again', async () => {
+		const fetchMock = vi.fn();
+		vi.stubGlobal('fetch', fetchMock);
+		const html = `<main>${postList([
+			'关于城市步行的三个观察',
+			'读完卡利古拉以后',
+			'一次数据库迁移事故的复盘',
+			'今年使用过的几种写作方法',
+			'如何理解网络社区里的信任',
+			'一次穿过群山的旅行',
+			'给未来项目留下的设计笔记',
+			'从一封旧信开始的调查'
+		])}</main>`;
+
+		const result = await evaluateSitePage(html, 'https://prefetched.test/');
+
+		expect(result.recommended).toBe(true);
+		expect(fetchMock).not.toHaveBeenCalled();
 	});
 
 	it('uses a same-origin feed to evaluate a broader sample of posts', async () => {

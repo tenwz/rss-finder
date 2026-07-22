@@ -7,7 +7,7 @@ import {
 	type Feed
 } from 'feedfinder-ts';
 import { getDomain } from 'tldts';
-import { evaluateSite } from './evaluate-site.js';
+import { evaluateSitePage } from './evaluate-site.js';
 
 export interface DiscoveredLink {
 	title: string;
@@ -25,6 +25,11 @@ export interface LinkDiscoveryResult {
 interface FetchedPage {
 	url: string;
 	html: string;
+}
+
+interface FeedDiscovery {
+	page: FetchedPage;
+	feeds: Feed[];
 }
 
 interface CandidatePage {
@@ -526,12 +531,13 @@ async function fetchPage(url: string): Promise<FetchedPage> {
 	return { url: response.url || url, html };
 }
 
-async function discoverFeeds(url: string): Promise<Feed[]> {
+async function discoverFeeds(url: string): Promise<FeedDiscovery | null> {
 	const controller = new AbortController();
 	const timeout = setTimeout(() => controller.abort(), FEED_CHECK_TIMEOUT_MS);
 
 	try {
-		const response = await fetch(url, {
+		const homepageUrl = new URL('/', url).href;
+		const response = await fetch(homepageUrl, {
 			headers: {
 				Accept:
 					'text/html,application/xhtml+xml,application/rss+xml,application/atom+xml,application/xml;q=0.9,*/*;q=0.1',
@@ -540,36 +546,74 @@ async function discoverFeeds(url: string): Promise<Feed[]> {
 			redirect: 'follow',
 			signal: controller.signal
 		});
-		if (!response.ok) return [];
+		if (!response.ok) return null;
 
 		const body = (await response.text()).slice(0, MAX_FEED_PAGE_CHARACTERS);
-		const pageUrl = response.url || url;
+		const pageUrl = response.url || homepageUrl;
+		const page = { url: pageUrl, html: body };
 		const advertisedFeeds = deduplicateFeeds(
 			parseHTMLContent(body, pageUrl).filter((feed) => Boolean(feed.link))
 		);
-		if (advertisedFeeds.length > 0) return advertisedFeeds;
+		if (advertisedFeeds.length > 0) return { page, feeds: advertisedFeeds };
 
 		const directFeed = parseRSSContent(body);
-		if (isEmptyFeed(directFeed)) return [];
-		return [{ title: directFeed.title, link: pageUrl }];
+		if (isEmptyFeed(directFeed)) return null;
+		return { page, feeds: [{ title: directFeed.title, link: pageUrl }] };
 	} catch {
-		return [];
+		return null;
 	} finally {
 		clearTimeout(timeout);
 	}
 }
 
-async function attachFeeds(links: DiscoveredLink[]): Promise<DiscoveredLinkWithFeeds[]> {
+function createLimiter(concurrency: number) {
+	let active = 0;
+	const queue: Array<() => void> = [];
+
+	function startNext() {
+		if (active >= concurrency) return;
+		queue.shift()?.();
+	}
+
+	return function run<T>(operation: () => Promise<T>): Promise<T> {
+		return new Promise<T>((resolve, reject) => {
+			queue.push(async () => {
+				active += 1;
+				try {
+					resolve(await operation());
+				} catch (error) {
+					reject(error);
+				} finally {
+					active -= 1;
+					startNext();
+				}
+			});
+			startNext();
+		});
+	};
+}
+
+async function discoverQualifiedLinks(links: DiscoveredLink[]): Promise<DiscoveredLinkWithFeeds[]> {
 	const candidates = links.slice(0, MAX_FEED_CHECKS);
 	const results = new Array<DiscoveredLinkWithFeeds | null>(candidates.length).fill(null);
+	const evaluate = createLimiter(EVALUATION_CONCURRENCY);
 	let nextIndex = 0;
 
 	async function worker() {
 		while (nextIndex < candidates.length) {
 			const index = nextIndex++;
 			const candidate = candidates[index];
-			const feeds = await discoverFeeds(candidate.url);
-			if (feeds.length > 0) results[index] = { ...candidate, feeds };
+			const discovery = await discoverFeeds(candidate.url);
+			if (!discovery) continue;
+
+			try {
+				const evaluation = await evaluate(() =>
+					evaluateSitePage(discovery.page.html, discovery.page.url)
+				);
+				if (evaluation.recommended) results[index] = { ...candidate, feeds: discovery.feeds };
+			} catch {
+				// A failed evaluation excludes this candidate without failing the whole request.
+			}
 		}
 	}
 
@@ -577,29 +621,6 @@ async function attachFeeds(links: DiscoveredLink[]): Promise<DiscoveredLinkWithF
 		Array.from({ length: Math.min(FEED_CHECK_CONCURRENCY, candidates.length) }, () => worker())
 	);
 	return results.filter((result): result is DiscoveredLinkWithFeeds => result !== null);
-}
-
-async function keepRecommendedLinks(
-	links: DiscoveredLinkWithFeeds[]
-): Promise<DiscoveredLinkWithFeeds[]> {
-	const keep = new Array<boolean>(links.length).fill(false);
-	let nextIndex = 0;
-
-	async function worker() {
-		while (nextIndex < links.length) {
-			const index = nextIndex++;
-			try {
-				keep[index] = (await evaluateSite(links[index].url)).recommended;
-			} catch {
-				keep[index] = false;
-			}
-		}
-	}
-
-	await Promise.all(
-		Array.from({ length: Math.min(EVALUATION_CONCURRENCY, links.length) }, () => worker())
-	);
-	return links.filter((_, index) => keep[index]);
 }
 
 export async function findLinks(targetUrl: string): Promise<LinkDiscoveryResult> {
@@ -622,6 +643,5 @@ export async function findLinks(targetUrl: string): Promise<LinkDiscoveryResult>
 		sources.push(extractRecommendedLinks(page.html, page.url, targetUrl, true));
 	}
 
-	const linksWithFeeds = await attachFeeds(combineSources(sources));
-	return { links: await keepRecommendedLinks(linksWithFeeds) };
+	return { links: await discoverQualifiedLinks(combineSources(sources)) };
 }

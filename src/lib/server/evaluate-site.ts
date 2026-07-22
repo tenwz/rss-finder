@@ -736,13 +736,12 @@ async function fetchFeedTitles(url: string): Promise<string[]> {
 	}
 }
 
-export async function evaluateSite(url: string): Promise<SiteEvaluation> {
-	const page = await fetchPage(new URL('/', url).href);
-	const feedUrl = discoverSameOriginFeed(page.html, page.url);
+export async function evaluateSitePage(html: string, url: string): Promise<SiteEvaluation> {
+	const feedUrl = discoverSameOriginFeed(html, url);
 	const feedTitles = feedUrl ? await fetchFeedTitles(feedUrl) : [];
 	let archiveTitles: string[] = [];
 	if (feedTitles.length < 8) {
-		const archiveUrl = discoverSameOriginArchive(page.html, page.url);
+		const archiveUrl = discoverSameOriginArchive(html, url);
 		if (archiveUrl) {
 			try {
 				const archive = await fetchPage(archiveUrl);
@@ -752,8 +751,13 @@ export async function evaluateSite(url: string): Promise<SiteEvaluation> {
 			}
 		}
 	}
-	return evaluateSiteHTML(page.html, page.url, [...feedTitles, ...archiveTitles], {
+	return evaluateSiteHTML(html, url, [...feedTitles, ...archiveTitles], {
 		feedPosts: feedTitles.length,
 		archivePosts: archiveTitles.length
 	});
+}
+
+export async function evaluateSite(url: string): Promise<SiteEvaluation> {
+	const page = await fetchPage(new URL('/', url).href);
+	return evaluateSitePage(page.html, page.url);
 }
