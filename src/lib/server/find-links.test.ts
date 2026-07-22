@@ -9,12 +9,23 @@ interface MockPage {
 
 const originalFetch = globalThis.fetch;
 
+function linkWithFeed(title: string, url: string, feed = new URL('/feed.xml', url).href) {
+	return { title, url, feeds: [{ title: '', link: feed }] };
+}
+
 function mockPages(pages: Record<string, MockPage>) {
 	vi.stubGlobal(
 		'fetch',
 		vi.fn(async (input: string | URL | Request) => {
 			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-			const page = pages[url] || { body: 'Not found', status: 404 };
+			const hostname = new URL(url).hostname;
+			const page =
+				pages[url] ||
+				(hostname !== 'source.test' && hostname !== 'www.source.test'
+					? {
+							body: `<html><head><link rel="alternate" type="application/rss+xml" href="/feed.xml"></head></html>`
+						}
+					: { body: 'Not found', status: 404 });
 			return new Response(page.body, {
 				status: page.status ?? 200,
 				headers: { 'Content-Type': page.contentType || 'text/html; charset=utf-8' }
@@ -48,9 +59,9 @@ describe('findLinks', () => {
 
 		await expect(findLinks('https://source.test/')).resolves.toEqual({
 			links: [
-				{ title: 'Friend Blog', url: 'https://friend.test/' },
-				{ title: 'Useful Tool', url: 'https://tool.test/app' },
-				{ title: 'Useful Project', url: 'https://project.test/' }
+				linkWithFeed('Friend Blog', 'https://friend.test/'),
+				linkWithFeed('Useful Tool', 'https://tool.test/app'),
+				linkWithFeed('Useful Project', 'https://project.test/')
 			]
 		});
 	});
@@ -69,7 +80,31 @@ describe('findLinks', () => {
 		});
 
 		await expect(findLinks('https://source.test/')).resolves.toEqual({
-			links: [{ title: 'Writer', url: 'https://writer.test/' }]
+			links: [linkWithFeed('Writer', 'https://writer.test/')]
+		});
+	});
+
+	it('returns only recommended links whose pages expose a feed', async () => {
+		mockPages({
+			'https://source.test/': {
+				body: '<nav><a href="/links">Links</a></nav>'
+			},
+			'https://source.test/links': {
+				body: `<main><h1>Links</h1><h2>Blogs I read</h2><ul>
+					<li><a href="https://feed.test/">Feed Blog</a></li>
+					<li><a href="https://no-feed.test/">No Feed Blog</a></li>
+				</ul></main>`
+			},
+			'https://feed.test/': {
+				body: '<link rel="alternate" type="application/atom+xml" href="/atom.xml">'
+			},
+			'https://no-feed.test/': {
+				body: '<html><head><title>No feed here</title></head><body></body></html>'
+			}
+		});
+
+		await expect(findLinks('https://source.test/')).resolves.toEqual({
+			links: [linkWithFeed('Feed Blog', 'https://feed.test/', 'https://feed.test/atom.xml')]
 		});
 	});
 
@@ -120,8 +155,8 @@ describe('findLinks', () => {
 
 		await expect(findLinks('https://www.source.test/')).resolves.toEqual({
 			links: [
-				{ title: 'Friend', url: 'https://friend.test/' },
-				{ title: "Writer's Blog", url: 'https://blog.writer.test/' }
+				linkWithFeed('Friend', 'https://friend.test/'),
+				linkWithFeed("Writer's Blog", 'https://blog.writer.test/')
 			]
 		});
 	});
@@ -141,8 +176,8 @@ describe('findLinks', () => {
 
 		await expect(findLinks('https://source.test/')).resolves.toEqual({
 			links: [
-				{ title: 'Writer', url: 'https://writer.test/' },
-				{ title: 'Publication', url: 'https://publication.test/' }
+				linkWithFeed('Writer', 'https://writer.test/'),
+				linkWithFeed('Publication', 'https://publication.test/')
 			]
 		});
 	});
@@ -164,8 +199,8 @@ describe('findLinks', () => {
 
 		await expect(findLinks('https://source.test/linkroll/')).resolves.toEqual({
 			links: [
-				{ title: 'Writer', url: 'https://writer.test/' },
-				{ title: 'Essayist', url: 'https://essayist.test/' }
+				linkWithFeed('Writer', 'https://writer.test/'),
+				linkWithFeed('Essayist', 'https://essayist.test/')
 			]
 		});
 	});
@@ -194,10 +229,10 @@ describe('findLinks', () => {
 
 		await expect(findLinks('https://source.test/')).resolves.toEqual({
 			links: [
-				{ title: 'Writer', url: 'https://writer.test/' },
-				{ title: 'A thoughtful article', url: 'https://article.test/post' },
-				{ title: 'Publication', url: 'https://publication.test/' },
-				{ title: 'Useful Tool', url: 'https://tool.test/app' }
+				linkWithFeed('Writer', 'https://writer.test/'),
+				linkWithFeed('A thoughtful article', 'https://article.test/post'),
+				linkWithFeed('Publication', 'https://publication.test/'),
+				linkWithFeed('Useful Tool', 'https://tool.test/app')
 			]
 		});
 	});

@@ -64,8 +64,7 @@ Since this app is built with SvelteKit, it's compatible with multiple runtimes. 
 	"feeds": [
 		{
 			"title": "Example Blog RSS",
-			"url": "https://example.com/rss.xml",
-			"type": "application/rss+xml"
+			"link": "https://example.com/rss.xml"
 		}
 	]
 }
@@ -78,6 +77,27 @@ Since this app is built with SvelteKit, it's compatible with multiple runtimes. 
 ```json
 {
 	"url": "https://example.com"
+}
+```
+
+Only external links whose pages expose a discoverable RSS, Atom or JSON feed are returned.
+
+**Response:**
+
+```json
+{
+	"links": [
+		{
+			"title": "A Recommended Site",
+			"url": "https://recommended.example.org/",
+			"feeds": [
+				{
+					"title": "A Recommended Site RSS",
+					"link": "https://recommended.example.org/rss.xml"
+				}
+			]
+		}
+	]
 }
 ```
 
@@ -107,19 +127,6 @@ results and used as a source for further discovery. Uncertain and rejected sites
 `false`. Detailed scoring remains internal to the reusable server-side evaluator exported from
 `src/lib/server/evaluate-site.ts`. When the homepage advertises a same-origin RSS or Atom feed,
 the evaluator also samples its recent titles; cross-origin feeds are deliberately not fetched.
-
-**Response:**
-
-```json
-{
-	"links": [
-		{
-			"title": "A Recommended Site",
-			"url": "https://recommended.example.org/"
-		}
-	]
-}
-```
 
 ## Contributing
 

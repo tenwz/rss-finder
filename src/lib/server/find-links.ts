@@ -1,4 +1,11 @@
 import { load, type CheerioAPI } from 'cheerio/slim';
+import {
+	deduplicateFeeds,
+	isEmptyFeed,
+	parseHTMLContent,
+	parseRSSContent,
+	type Feed
+} from 'feedfinder-ts';
 import { getDomain } from 'tldts';
 
 export interface DiscoveredLink {
@@ -6,8 +13,12 @@ export interface DiscoveredLink {
 	url: string;
 }
 
+export interface DiscoveredLinkWithFeeds extends DiscoveredLink {
+	feeds: Feed[];
+}
+
 export interface LinkDiscoveryResult {
-	links: DiscoveredLink[];
+	links: DiscoveredLinkWithFeeds[];
 }
 
 interface FetchedPage {
@@ -27,8 +38,12 @@ interface LinkCandidate extends DiscoveredLink {
 }
 
 const REQUEST_TIMEOUT_MS = 10_000;
+const FEED_CHECK_TIMEOUT_MS = 6_000;
 const MAX_PAGE_CHARACTERS = 2_000_000;
+const MAX_FEED_PAGE_CHARACTERS = 500_000;
 const MAX_CANDIDATE_PAGES = 3;
+const MAX_FEED_CHECKS = 40;
+const FEED_CHECK_CONCURRENCY = 6;
 const MAX_RESULTS = 100;
 
 const RECOMMENDATION_PATTERNS = [
@@ -509,6 +524,59 @@ async function fetchPage(url: string): Promise<FetchedPage> {
 	return { url: response.url || url, html };
 }
 
+async function discoverFeeds(url: string): Promise<Feed[]> {
+	const controller = new AbortController();
+	const timeout = setTimeout(() => controller.abort(), FEED_CHECK_TIMEOUT_MS);
+
+	try {
+		const response = await fetch(url, {
+			headers: {
+				Accept:
+					'text/html,application/xhtml+xml,application/rss+xml,application/atom+xml,application/xml;q=0.9,*/*;q=0.1',
+				'User-Agent': 'rss-finder/2.0'
+			},
+			redirect: 'follow',
+			signal: controller.signal
+		});
+		if (!response.ok) return [];
+
+		const body = (await response.text()).slice(0, MAX_FEED_PAGE_CHARACTERS);
+		const pageUrl = response.url || url;
+		const advertisedFeeds = deduplicateFeeds(
+			parseHTMLContent(body, pageUrl).filter((feed) => Boolean(feed.link))
+		);
+		if (advertisedFeeds.length > 0) return advertisedFeeds;
+
+		const directFeed = parseRSSContent(body);
+		if (isEmptyFeed(directFeed)) return [];
+		return [{ title: directFeed.title, link: pageUrl }];
+	} catch {
+		return [];
+	} finally {
+		clearTimeout(timeout);
+	}
+}
+
+async function attachFeeds(links: DiscoveredLink[]): Promise<DiscoveredLinkWithFeeds[]> {
+	const candidates = links.slice(0, MAX_FEED_CHECKS);
+	const results = new Array<DiscoveredLinkWithFeeds | null>(candidates.length).fill(null);
+	let nextIndex = 0;
+
+	async function worker() {
+		while (nextIndex < candidates.length) {
+			const index = nextIndex++;
+			const candidate = candidates[index];
+			const feeds = await discoverFeeds(candidate.url);
+			if (feeds.length > 0) results[index] = { ...candidate, feeds };
+		}
+	}
+
+	await Promise.all(
+		Array.from({ length: Math.min(FEED_CHECK_CONCURRENCY, candidates.length) }, () => worker())
+	);
+	return results.filter((result): result is DiscoveredLinkWithFeeds => result !== null);
+}
+
 export async function findLinks(targetUrl: string): Promise<LinkDiscoveryResult> {
 	const homePage = await fetchPage(targetUrl);
 	const sources: DiscoveredLink[][] = [
@@ -529,5 +597,5 @@ export async function findLinks(targetUrl: string): Promise<LinkDiscoveryResult>
 		sources.push(extractRecommendedLinks(page.html, page.url, targetUrl, true));
 	}
 
-	return { links: combineSources(sources) };
+	return { links: await attachFeeds(combineSources(sources)) };
 }
