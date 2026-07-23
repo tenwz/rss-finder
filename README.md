@@ -81,7 +81,8 @@ Since this app is built with SvelteKit, it's compatible with multiple runtimes. 
 ```
 
 Only external links whose pages expose a discoverable RSS, Atom or JSON feed and pass the site
-evaluator (`recommended: true`) are returned.
+evaluator (`recommended: true`) are returned. Discovery is best-effort and returns at most five
+links to bound the work required for a very large linkroll.
 
 **Response:**
 

@@ -123,7 +123,7 @@ describe('findLinks', () => {
 		});
 	});
 
-	it('bounds the number of feed and quality checks on a large blogroll', async () => {
+	it('returns at most five links and stops scoring a large blogroll early', async () => {
 		const links = Array.from(
 			{ length: 13 },
 			(_, index) => `<li><a href="https://writer-${index + 1}.test/">Writer ${index + 1}</a></li>`
@@ -136,9 +136,21 @@ describe('findLinks', () => {
 
 		const result = await findLinks('https://source.test/');
 
-		expect(result.links).toHaveLength(12);
-		expect(result.links.map((link) => link.url)).not.toContain('https://writer-13.test/');
-		expect(evaluateSitePageMock).toHaveBeenCalledTimes(12);
+		expect(result.links).toHaveLength(5);
+		expect(result.links.map((link) => link.url)).toEqual([
+			'https://writer-1.test/',
+			'https://writer-2.test/',
+			'https://writer-3.test/',
+			'https://writer-4.test/',
+			'https://writer-5.test/'
+		]);
+		// A small amount of in-flight work is allowed by the two concurrent
+		// evaluator slots, but the full blogroll must never be scored.
+		expect(evaluateSitePageMock.mock.calls.length).toBeLessThanOrEqual(7);
+		expect(evaluateSitePageMock).not.toHaveBeenCalledWith(
+			expect.anything(),
+			'https://writer-13.test/'
+		);
 	});
 
 	it('includes homepage favicon and description without another fetch', async () => {

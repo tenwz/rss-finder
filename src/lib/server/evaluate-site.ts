@@ -626,7 +626,7 @@ async function fetchPage(url: string): Promise<{ url: string; html: string }> {
 
 	return {
 		url: response.url || url,
-		html: await readResponseText(response, MAX_PAGE_CHARACTERS)
+		html: await readResponseText(response, MAX_PAGE_CHARACTERS, REQUEST_TIMEOUT_MS)
 	};
 }
 
@@ -728,7 +728,7 @@ async function fetchFeedTitles(url: string): Promise<string[]> {
 		const finalUrl = new URL(response.url || url);
 		if (finalUrl.origin !== new URL(url).origin) return [];
 		const contentType = response.headers.get('content-type') || '';
-		const body = await readResponseText(response, MAX_FEED_CHARACTERS);
+		const body = await readResponseText(response, MAX_FEED_CHARACTERS, REQUEST_TIMEOUT_MS);
 		return parseFeedTitles(body, contentType);
 	} catch {
 		return [];

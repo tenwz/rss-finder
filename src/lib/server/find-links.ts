@@ -51,10 +51,16 @@ const FEED_CHECK_TIMEOUT_MS = 5_000;
 const MAX_PAGE_CHARACTERS = 600_000;
 const MAX_FEED_PAGE_CHARACTERS = 250_000;
 const MAX_CANDIDATE_PAGES = 2;
-const MAX_FEED_CHECKS = 12;
+// Link discovery is deliberately a bounded best-effort operation.  It runs in a
+// Worker, so continuing to inspect a long blogroll after we have enough useful
+// answers only increases the chance of exhausting the invocation.
+const MAX_FEED_CHECKS = 10;
+const MAX_EVALUATIONS = 7;
+const MAX_RETURNED_LINKS = 5;
+const DISCOVERY_BUDGET_MS = 11_000;
 const FEED_CHECK_CONCURRENCY = 3;
 const EVALUATION_CONCURRENCY = 2;
-const MAX_RESULTS = 100;
+const MAX_SOURCE_LINKS = 100;
 
 const RECOMMENDATION_PATTERNS = [
 	/\bblog\s*roll\b/i,
@@ -402,7 +408,7 @@ function mergeLinks(target: DiscoveredLink[], additions: DiscoveredLink[]) {
 	const indexes = new Map(target.map((link, index) => [link.url, index]));
 
 	for (const link of additions) {
-		if (target.length >= MAX_RESULTS) break;
+		if (target.length >= MAX_SOURCE_LINKS) break;
 		const index = indexes.get(link.url);
 		if (index === undefined) {
 			indexes.set(link.url, target.length);
@@ -500,7 +506,7 @@ function combineSources(sources: DiscoveredLink[][]): DiscoveredLink[] {
 	if (nonEmptySources.length === 0) return [];
 
 	const result: DiscoveredLink[] = [];
-	const quota = Math.floor(MAX_RESULTS / nonEmptySources.length);
+	const quota = Math.floor(MAX_SOURCE_LINKS / nonEmptySources.length);
 	for (const source of nonEmptySources) mergeLinks(result, source.slice(0, quota));
 	for (const source of nonEmptySources) mergeLinks(result, source);
 	return result;
@@ -553,7 +559,7 @@ async function fetchPage(url: string): Promise<FetchedPage> {
 		throw new Error(`Target returned unsupported content type: ${contentType}`);
 	}
 
-	const html = await readResponseText(response, MAX_PAGE_CHARACTERS);
+	const html = await readResponseText(response, MAX_PAGE_CHARACTERS, REQUEST_TIMEOUT_MS);
 	return { url: response.url || url, html };
 }
 
@@ -574,7 +580,7 @@ async function discoverFeeds(url: string): Promise<FeedDiscovery | null> {
 		});
 		if (!response.ok) return null;
 
-		const body = await readResponseText(response, MAX_FEED_PAGE_CHARACTERS);
+		const body = await readResponseText(response, MAX_FEED_PAGE_CHARACTERS, FEED_CHECK_TIMEOUT_MS);
 		const pageUrl = response.url || homepageUrl;
 		const page = { url: pageUrl, html: body };
 		const advertisedFeeds = deduplicateFeeds(
@@ -623,6 +629,8 @@ interface DiscoveryStats {
 	scannedCandidates: number;
 	feedCandidates: number;
 	evaluatedCandidates: number;
+	stoppedEarly: boolean;
+	deadlineReached: boolean;
 }
 
 async function discoverQualifiedLinks(
@@ -631,32 +639,60 @@ async function discoverQualifiedLinks(
 	const candidates = links.slice(0, MAX_FEED_CHECKS);
 	const results = new Array<DiscoveredLinkWithFeeds | null>(candidates.length).fill(null);
 	const stats: DiscoveryStats = {
-		scannedCandidates: candidates.length,
+		scannedCandidates: 0,
 		feedCandidates: 0,
-		evaluatedCandidates: 0
+		evaluatedCandidates: 0,
+		stoppedEarly: false,
+		deadlineReached: false
 	};
 	const evaluate = createLimiter(EVALUATION_CONCURRENCY);
+	const deadline = Date.now() + DISCOVERY_BUDGET_MS;
 	let nextIndex = 0;
+	let acceptedCount = 0;
+	let reservedEvaluations = 0;
+
+	function canContinue(allowReservedEvaluation = false) {
+		if (
+			acceptedCount >= MAX_RETURNED_LINKS ||
+			(!allowReservedEvaluation && reservedEvaluations >= MAX_EVALUATIONS)
+		) {
+			stats.stoppedEarly = true;
+			return false;
+		}
+		if (Date.now() >= deadline) {
+			stats.stoppedEarly = true;
+			stats.deadlineReached = true;
+			return false;
+		}
+		return true;
+	}
 
 	async function worker() {
-		while (nextIndex < candidates.length) {
+		while (nextIndex < candidates.length && canContinue()) {
 			const index = nextIndex++;
 			const candidate = candidates[index];
+			stats.scannedCandidates += 1;
 			const discovery = await discoverFeeds(candidate.url);
 			if (!discovery) continue;
 			stats.feedCandidates += 1;
+			if (!canContinue()) continue;
 
 			try {
-				stats.evaluatedCandidates += 1;
-				const evaluation = await evaluate(() =>
-					evaluateSitePage(discovery.page.html, discovery.page.url)
-				);
-				if (evaluation.recommended) {
+				reservedEvaluations += 1;
+				const evaluation = await evaluate(async () => {
+					// This candidate may have waited behind another evaluation. Recheck
+					// the request budget before spending CPU on its DOM analysis.
+					if (!canContinue(true)) return null;
+					stats.evaluatedCandidates += 1;
+					return evaluateSitePage(discovery.page.html, discovery.page.url);
+				});
+				if (evaluation?.recommended && acceptedCount < MAX_RETURNED_LINKS) {
 					results[index] = {
 						...candidate,
 						...extractSiteMetadata(discovery.page.html, discovery.page.url),
 						feeds: discovery.feeds
 					};
+					acceptedCount += 1;
 				}
 			} catch {
 				// A failed evaluation excludes this candidate without failing the whole request.
@@ -668,7 +704,9 @@ async function discoverQualifiedLinks(
 		Array.from({ length: Math.min(FEED_CHECK_CONCURRENCY, candidates.length) }, () => worker())
 	);
 	return {
-		links: results.filter((result): result is DiscoveredLinkWithFeeds => result !== null),
+		links: results
+			.filter((result): result is DiscoveredLinkWithFeeds => result !== null)
+			.slice(0, MAX_RETURNED_LINKS),
 		stats
 	};
 }
@@ -699,6 +737,9 @@ export async function findLinks(targetUrl: string): Promise<LinkDiscoveryResult>
 	console.info('find-links completed', {
 		sourcePages: sources.length,
 		candidateCount: candidates.length,
+		candidateLimit: MAX_FEED_CHECKS,
+		evaluationLimit: MAX_EVALUATIONS,
+		resultLimit: MAX_RETURNED_LINKS,
 		...discovered.stats,
 		resultCount: discovered.links.length,
 		durationMs: Date.now() - startedAt
