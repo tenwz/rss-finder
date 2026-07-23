@@ -32,8 +32,8 @@ interface ThemeFeature {
 }
 
 const REQUEST_TIMEOUT_MS = 8_000;
-const MAX_PAGE_CHARACTERS = 300_000;
-const MAX_FEED_CHARACTERS = 300_000;
+const MAX_PAGE_CHARACTERS = 200_000;
+const MAX_FEED_CHARACTERS = 160_000;
 const MAX_SAMPLED_POSTS = 16;
 const MAX_ANALYZED_POSTS = 30;
 
@@ -426,11 +426,12 @@ export function evaluateSiteHTML(
 		feedPosts?: number;
 		archivePosts?: number;
 		latestPublishedAt?: Date | null;
-	} = {}
+	} = {},
+	parsedDocument?: CheerioAPI
 ): SiteEvaluation {
 	// DOM parsing dominates this evaluator's CPU use. Keep one parsed document
 	// per page and share it across all signals instead of reparsing the same HTML.
-	const $ = load(html);
+	const $ = parsedDocument || load(html);
 	const pageTitles = collectPostTitles($, url);
 	const titles = Array.from(new Set([...pageTitles, ...additionalTitles])).slice(
 		0,
@@ -659,8 +660,7 @@ async function fetchPage(url: string): Promise<{ url: string; html: string }> {
 	};
 }
 
-function discoverSameOriginFeed(html: string, pageUrl: string): string | null {
-	const $ = load(html);
+function discoverSameOriginFeed($: CheerioAPI, pageUrl: string): string | null {
 	const page = new URL(pageUrl);
 	let discovered: string | null = null;
 
@@ -685,8 +685,7 @@ function discoverSameOriginFeed(html: string, pageUrl: string): string | null {
 	return discovered;
 }
 
-function discoverSameOriginArchive(html: string, pageUrl: string): string | null {
-	const $ = load(html);
+function discoverSameOriginArchive($: CheerioAPI, pageUrl: string): string | null {
 	const page = new URL(pageUrl);
 	const pageHostname = page.hostname.toLowerCase().replace(/^www\./, '');
 	let discovered: string | null = null;
@@ -793,11 +792,21 @@ async function fetchFeedSummary(url: string): Promise<FeedSummary> {
 }
 
 export async function evaluateSitePage(html: string, url: string): Promise<SiteEvaluation> {
-	const feedUrl = discoverSameOriginFeed(html, url);
+	const $ = load(html);
+	const pageHistory = historySignals($);
+	const feedUrl = discoverSameOriginFeed($, url);
 	const feed = feedUrl ? await fetchFeedSummary(feedUrl) : { titles: [], latestPublishedAt: null };
 	let archiveTitles: string[] = [];
-	if (feed.titles.length < 8) {
-		const archiveUrl = discoverSameOriginArchive(html, url);
+	const recentPublicationThreshold = new Date();
+	recentPublicationThreshold.setUTCMonth(recentPublicationThreshold.getUTCMonth() - 3);
+	const latestKnownPublication = [pageHistory.latestAt, feed.latestPublishedAt]
+		.filter((date): date is Date => date instanceof Date)
+		.reduce<Date | null>((latest, date) => (!latest || date > latest ? date : latest), null);
+	const hasRecentPublication =
+		latestKnownPublication !== null &&
+		latestKnownPublication.getTime() >= recentPublicationThreshold.getTime();
+	if (feed.titles.length < 8 && hasRecentPublication) {
+		const archiveUrl = discoverSameOriginArchive($, url);
 		if (archiveUrl) {
 			try {
 				const archive = await fetchPage(archiveUrl);
@@ -807,11 +816,17 @@ export async function evaluateSitePage(html: string, url: string): Promise<SiteE
 			}
 		}
 	}
-	return evaluateSiteHTML(html, url, [...feed.titles, ...archiveTitles], {
-		feedPosts: feed.titles.length,
-		archivePosts: archiveTitles.length,
-		latestPublishedAt: feed.latestPublishedAt
-	});
+	return evaluateSiteHTML(
+		html,
+		url,
+		[...feed.titles, ...archiveTitles],
+		{
+			feedPosts: feed.titles.length,
+			archivePosts: archiveTitles.length,
+			latestPublishedAt: feed.latestPublishedAt
+		},
+		$
+	);
 }
 
 export async function evaluateSite(url: string): Promise<SiteEvaluation> {

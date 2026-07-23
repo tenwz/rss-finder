@@ -595,7 +595,7 @@ describe('evaluateSiteHTML', () => {
 		expect(result.signals.selfHostingPosts).toBeGreaterThanOrEqual(6);
 	});
 
-	it('follows an explicit same-origin article archive on a legacy homepage', async () => {
+	it('skips a legacy archive when no recent publication can be verified', async () => {
 		const homepage = `<html><body><map><area href="articles.html"></map>
 			<a href="/recent.html">A Recent Essay</a></body></html>`;
 		const archive = `<html><body><table>${[
@@ -620,11 +620,11 @@ describe('evaluateSiteHTML', () => {
 
 		const result = await evaluateSite('https://legacy-source.test/');
 
-		expect(fetchMock).toHaveBeenCalledTimes(2);
+		expect(fetchMock).toHaveBeenCalledTimes(1);
 		expect(result.recommended).toBe(false);
 		expect(result.reasons).toContain('no_recent_publication');
 		expect(result.signals.feedPosts).toBe(0);
-		expect(result.signals.archivePosts).toBe(8);
+		expect(result.signals.archivePosts).toBe(0);
 	});
 
 	it('does not fetch a cross-origin feed', async () => {

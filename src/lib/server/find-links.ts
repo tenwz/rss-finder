@@ -48,8 +48,8 @@ interface LinkCandidate extends DiscoveredLink {
 
 const REQUEST_TIMEOUT_MS = 8_000;
 const FEED_CHECK_TIMEOUT_MS = 5_000;
-const MAX_PAGE_CHARACTERS = 600_000;
-const MAX_FEED_PAGE_CHARACTERS = 250_000;
+const MAX_PAGE_CHARACTERS = 400_000;
+const MAX_FEED_PAGE_CHARACTERS = 160_000;
 const MAX_CANDIDATE_PAGES = 2;
 // Link discovery is deliberately a bounded best-effort operation.  It runs in a
 // Worker, so continuing to inspect a long blogroll after we have enough useful
