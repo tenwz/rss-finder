@@ -8,11 +8,11 @@ afterEach(() => {
 	globalThis.fetch = originalFetch;
 });
 
-function postList(titles: string[]): string {
+function postList(titles: string[], publishedAt = new Date().toISOString()): string {
 	return titles
 		.map(
 			(title, index) =>
-				`<article><h2><a href="/posts/${index}">${title}</a></h2><p>${'原创内容 '.repeat(50)}</p></article>`
+				`<article><h2><a href="/posts/${index}">${title}</a></h2><time datetime="${publishedAt}"></time><p>${'原创内容 '.repeat(50)}</p></article>`
 		)
 		.join('');
 }
@@ -203,7 +203,7 @@ describe('evaluateSiteHTML', () => {
 				<li><a href="/six">一次穿过群山的旅行</a></li>
 				<li><a href="/seven">给未来项目的设计笔记</a></li>
 				<li><a href="/eight">从一封旧信开始的调查</a></li>
-			</ul><p>${'文章摘要内容 '.repeat(160)}</p></div></body></html>`;
+			</ul><time datetime="${new Date().toISOString()}"></time><p>${'文章摘要内容 '.repeat(160)}</p></div></body></html>`;
 
 		const result = evaluateSiteHTML(html, 'https://lists.test/');
 		expect(result.signals.sampledPosts).toBe(8);
@@ -310,9 +310,34 @@ describe('evaluateSiteHTML', () => {
 		expect(result.signals.repetitivePosts).toBe(0);
 	});
 
-	it('keeps a content-rich stale archive discoverable while reporting staleness', () => {
+	it('rejects a content-rich stale archive while reporting staleness', () => {
 		const result = evaluateSiteHTML(
-			`<html><body><main>${postList([
+			`<html><body><main>${postList(
+				[
+					'城市夜行笔记',
+					'一次系统调查记录',
+					'最近读过的几本书',
+					'周末骑行路线',
+					'整理旧照片',
+					'厨房里的失败实验',
+					'关于长期写作',
+					'夏天的声音'
+				],
+				'2023-01-01'
+			)}</main></body></html>`,
+			'https://stale.test/'
+		);
+
+		expect(result.recommended).toBe(false);
+		expect(result.signals.latestPostYear).toBe(2023);
+		expect(result.reasons).toContain('stale_content');
+	});
+
+	it('requires a publication from the previous three calendar months', () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date('2026-07-23T12:00:00Z'));
+		try {
+			const titles = [
 				'城市夜行笔记',
 				'一次系统调查记录',
 				'最近读过的几本书',
@@ -321,13 +346,22 @@ describe('evaluateSiteHTML', () => {
 				'厨房里的失败实验',
 				'关于长期写作',
 				'夏天的声音'
-			])}<time datetime="2022-01-01"></time><time datetime="2023-01-01"></time></main></body></html>`,
-			'https://stale.test/'
-		);
-
-		expect(result.recommended).toBe(true);
-		expect(result.signals.latestPostYear).toBe(2023);
-		expect(result.reasons).toContain('stale_content');
+			];
+			expect(
+				evaluateSiteHTML(
+					`<main>${postList(titles, '2026-04-22T12:00:00Z')}</main>`,
+					'https://inactive.test/'
+				).recommended
+			).toBe(false);
+			expect(
+				evaluateSiteHTML(
+					`<main>${postList(titles, '2026-04-23T12:00:00Z')}</main>`,
+					'https://active.test/'
+				).recommended
+			).toBe(true);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it('keeps a focused active site with five substantial posts', () => {
@@ -364,7 +398,7 @@ describe('evaluateSiteHTML', () => {
 		expect(result.reasons).not.toContain('focused_active_site');
 	});
 
-	it('reads article titles from a legacy table-based document', () => {
+	it('rejects a legacy document when it has no verifiable recent publication date', () => {
 		const links = [
 			['greatwork.html', 'How to Do Great Work'],
 			['ideas.html', 'How to Get New Ideas'],
@@ -383,21 +417,25 @@ describe('evaluateSiteHTML', () => {
 		);
 
 		expect(result.signals.sampledPosts).toBe(8);
-		expect(result.recommended).toBe(true);
+		expect(result.recommended).toBe(false);
+		expect(result.reasons).toContain('no_recent_publication');
 	});
 
 	it('ignores impossible future years in page decorations', () => {
 		const result = evaluateSiteHTML(
-			`<html><body><main>${postList([
-				'城市夜行笔记',
-				'一次系统调查记录',
-				'最近读过的几本书',
-				'周末骑行路线',
-				'整理旧照片',
-				'厨房里的失败实验',
-				'关于长期写作',
-				'夏天的声音'
-			])}<time datetime="2023-01-01"></time><time datetime="2039-01-01"></time></main></body></html>`,
+			`<html><body><main>${postList(
+				[
+					'城市夜行笔记',
+					'一次系统调查记录',
+					'最近读过的几本书',
+					'周末骑行路线',
+					'整理旧照片',
+					'厨房里的失败实验',
+					'关于长期写作',
+					'夏天的声音'
+				],
+				'2023-01-01'
+			)}<time datetime="2039-01-01"></time></main></body></html>`,
 			'https://future-date.test/'
 		);
 
@@ -477,6 +515,44 @@ describe('evaluateSiteHTML', () => {
 		expect(fetchMock).not.toHaveBeenCalled();
 	});
 
+	it('accepts a recent RSS publication when the homepage omits dates', async () => {
+		const titles = [
+			'关于城市步行的三个观察',
+			'读完卡利古拉以后',
+			'一个数据库迁移事故的复盘',
+			'今年使用过的几种写作方法',
+			'如何理解网络社区里的信任',
+			'一次穿过群山的旅行',
+			'给未来项目留下的设计笔记',
+			'从一封旧信开始的调查'
+		];
+		const homepage = `<link rel="alternate" type="application/rss+xml" href="/feed.xml"><main>${titles
+			.map(
+				(title, index) =>
+					`<article><h2><a href="/posts/${index}">${title}</a></h2><p>${'原创内容 '.repeat(50)}</p></article>`
+			)
+			.join('')}</main>`;
+		const feed = `<?xml version="1.0"?><rss><channel>${titles
+			.map(
+				(title) =>
+					`<item><title>${title}</title><pubDate>Wed, 22 Jul 2026 12:00:00 GMT</pubDate></item>`
+			)
+			.join('')}</channel></rss>`;
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date('2026-07-23T12:00:00Z'));
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async () => new Response(feed, { headers: { 'Content-Type': 'application/rss+xml' } }))
+		);
+		try {
+			const result = await evaluateSitePage(homepage, 'https://feed-date.test/');
+			expect(result.recommended).toBe(true);
+			expect(result.signals.latestPostAt).toBe('2026-07-22T12:00:00.000Z');
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it('uses a same-origin feed to evaluate a broader sample of posts', async () => {
 		const homepage = `<html><head><link rel="alternate" type="application/rss+xml" href="/feed.xml"></head><body>
 			<main>${postList([
@@ -545,7 +621,8 @@ describe('evaluateSiteHTML', () => {
 		const result = await evaluateSite('https://legacy-source.test/');
 
 		expect(fetchMock).toHaveBeenCalledTimes(2);
-		expect(result.recommended).toBe(true);
+		expect(result.recommended).toBe(false);
+		expect(result.reasons).toContain('no_recent_publication');
 		expect(result.signals.feedPosts).toBe(0);
 		expect(result.signals.archivePosts).toBe(8);
 	});

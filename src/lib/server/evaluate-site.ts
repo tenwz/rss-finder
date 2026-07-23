@@ -12,6 +12,7 @@ export interface SiteEvaluationSignals {
 	themeFeatures: string[];
 	historyYears: number;
 	latestPostYear: number | null;
+	latestPostAt: string | null;
 	feedPosts: number;
 	archivePosts: number;
 }
@@ -295,23 +296,40 @@ function mainTextLength($: CheerioAPI): number {
 	}, 0);
 }
 
-function historySignals($: CheerioAPI): { span: number; latest: number | null } {
+function parsePublishedDate(value: string, currentYear: number): Date | null {
+	const normalized = cleanText(value);
+	const chineseDate = normalized.match(/(20\d{2})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*[日号]?/);
+	const timestamp = chineseDate
+		? Date.UTC(Number(chineseDate[1]), Number(chineseDate[2]) - 1, Number(chineseDate[3]))
+		: Date.parse(normalized);
+	if (!Number.isFinite(timestamp)) return null;
+
+	const date = new Date(timestamp);
+	if (date.getUTCFullYear() < 1990 || date.getUTCFullYear() > currentYear) return null;
+	return date;
+}
+
+function historySignals($: CheerioAPI): {
+	span: number;
+	latest: number | null;
+	latestAt: Date | null;
+} {
 	const currentYear = new Date().getUTCFullYear();
-	const years = $('time[datetime], [class*="date"], [class*="time"]')
+	const dates = $('time[datetime], [class*="date"], [class*="time"]')
 		.map((_, element) => {
 			const value = `${$(element).attr('datetime') || ''} ${$(element).text()}`;
-			const match = value.match(/\b(20\d{2})\b/);
-			return match ? Number(match[1]) : null;
+			return parsePublishedDate(value, currentYear);
 		})
 		.get()
-		.filter(
-			(year): year is number => Number.isInteger(year) && year >= 1990 && year <= currentYear
-		);
+		.filter((date): date is Date => date instanceof Date);
+	const years = dates.map((date) => date.getUTCFullYear());
 
-	if (years.length === 0) return { span: 0, latest: null };
+	if (years.length === 0) return { span: 0, latest: null, latestAt: null };
+	const latestAt = new Date(Math.max(...dates.map((date) => date.getTime())));
 	return {
 		span: years.length < 2 ? 0 : Math.max(...years) - Math.min(...years),
-		latest: Math.max(...years)
+		latest: latestAt.getUTCFullYear(),
+		latestAt
 	};
 }
 
@@ -404,7 +422,11 @@ export function evaluateSiteHTML(
 	html: string,
 	url: string,
 	additionalTitles: string[] = [],
-	additionalSignals: { feedPosts?: number; archivePosts?: number } = {}
+	additionalSignals: {
+		feedPosts?: number;
+		archivePosts?: number;
+		latestPublishedAt?: Date | null;
+	} = {}
 ): SiteEvaluation {
 	// DOM parsing dominates this evaluator's CPU use. Keep one parsed document
 	// per page and share it across all signals instead of reparsing the same HTML.
@@ -430,6 +452,13 @@ export function evaluateSiteHTML(
 	const theme = themeSignals($, html);
 	const generator = generatorName($);
 	const clientRenderedShell = isClientRenderedShell($, titles, textLength);
+	const latestPostAt = [history.latestAt, additionalSignals.latestPublishedAt]
+		.filter((date): date is Date => date instanceof Date)
+		.reduce<Date | null>((latest, date) => (!latest || date > latest ? date : latest), null);
+	const recentPublicationThreshold = new Date();
+	recentPublicationThreshold.setUTCMonth(recentPublicationThreshold.getUTCMonth() - 3);
+	const hasRecentPublication =
+		latestPostAt !== null && latestPostAt.getTime() >= recentPublicationThreshold.getTime();
 	const reasons: string[] = [];
 	let score = 50;
 
@@ -472,6 +501,7 @@ export function evaluateSiteHTML(
 		score -= 25;
 		reasons.push('stale_content');
 	}
+	if (!hasRecentPublication) reasons.push('no_recent_publication');
 
 	if (
 		titles.length >= 5 &&
@@ -566,7 +596,8 @@ export function evaluateSiteHTML(
 		tutorialRatio < 0.3 &&
 		selfHostingRatio < 0.2 &&
 		operationalRatio < 0.3 &&
-		repetitiveRatio < 0.55;
+		repetitiveRatio < 0.55 &&
+		hasRecentPublication;
 
 	return {
 		url,
@@ -583,7 +614,8 @@ export function evaluateSiteHTML(
 			repetitivePosts,
 			themeFeatures: theme.features,
 			historyYears: history.span,
-			latestPostYear: history.latest,
+			latestPostYear: latestPostAt?.getUTCFullYear() || history.latest,
+			latestPostAt: latestPostAt?.toISOString() || null,
 			feedPosts: additionalSignals.feedPosts ?? additionalTitles.length,
 			archivePosts: additionalSignals.archivePosts ?? 0
 		}
@@ -681,9 +713,16 @@ function discoverSameOriginArchive(html: string, pageUrl: string): string | null
 	return discovered;
 }
 
-function parseFeedTitles(body: string, contentType: string): string[] {
+interface FeedSummary {
+	titles: string[];
+	latestPublishedAt: Date | null;
+}
+
+function parseFeedSummary(body: string, contentType: string): FeedSummary {
 	const titles: string[] = [];
 	const seen = new Set<string>();
+	const dates: Date[] = [];
+	const currentYear = new Date().getUTCFullYear();
 	const addTitle = (value: unknown) => {
 		if (typeof value !== 'string' || titles.length >= MAX_ANALYZED_POSTS) return;
 		const title = cleanText(value);
@@ -691,23 +730,42 @@ function parseFeedTitles(body: string, contentType: string): string[] {
 		seen.add(title);
 		titles.push(title);
 	};
+	const addDate = (value: unknown) => {
+		if (typeof value !== 'string') return;
+		const date = parsePublishedDate(value, currentYear);
+		if (date) dates.push(date);
+	};
+	const summary = (): FeedSummary => ({
+		titles,
+		latestPublishedAt:
+			dates.length > 0 ? new Date(Math.max(...dates.map((date) => date.getTime()))) : null
+	});
 
 	if (/json/i.test(contentType) || /^\s*\{/.test(body)) {
 		try {
-			const feed = JSON.parse(body) as { items?: Array<{ title?: unknown }> };
-			for (const item of feed.items || []) addTitle(item.title);
-			return titles;
+			const feed = JSON.parse(body) as {
+				items?: Array<{ title?: unknown; date_published?: unknown; date_modified?: unknown }>;
+			};
+			for (const item of feed.items || []) {
+				addTitle(item.title);
+				addDate(item.date_published);
+				addDate(item.date_modified);
+			}
+			return summary();
 		} catch {
-			return [];
+			return summary();
 		}
 	}
 
 	const $ = load(body, { xmlMode: true });
 	$('item > title, entry > title').each((_, element) => addTitle($(element).text()));
-	return titles;
+	$(
+		'item > pubDate, item > date, item > updated, item > published, entry > updated, entry > published'
+	).each((_, element) => addDate($(element).text()));
+	return summary();
 }
 
-async function fetchFeedTitles(url: string): Promise<string[]> {
+async function fetchFeedSummary(url: string): Promise<FeedSummary> {
 	const controller = new AbortController();
 	const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 	try {
@@ -720,15 +778,15 @@ async function fetchFeedTitles(url: string): Promise<string[]> {
 			redirect: 'follow',
 			signal: controller.signal
 		});
-		if (!response.ok) return [];
+		if (!response.ok) return { titles: [], latestPublishedAt: null };
 
 		const finalUrl = new URL(response.url || url);
-		if (finalUrl.origin !== new URL(url).origin) return [];
+		if (finalUrl.origin !== new URL(url).origin) return { titles: [], latestPublishedAt: null };
 		const contentType = response.headers.get('content-type') || '';
 		const body = await readResponseText(response, MAX_FEED_CHARACTERS, REQUEST_TIMEOUT_MS);
-		return parseFeedTitles(body, contentType);
+		return parseFeedSummary(body, contentType);
 	} catch {
-		return [];
+		return { titles: [], latestPublishedAt: null };
 	} finally {
 		clearTimeout(timeout);
 	}
@@ -736,9 +794,9 @@ async function fetchFeedTitles(url: string): Promise<string[]> {
 
 export async function evaluateSitePage(html: string, url: string): Promise<SiteEvaluation> {
 	const feedUrl = discoverSameOriginFeed(html, url);
-	const feedTitles = feedUrl ? await fetchFeedTitles(feedUrl) : [];
+	const feed = feedUrl ? await fetchFeedSummary(feedUrl) : { titles: [], latestPublishedAt: null };
 	let archiveTitles: string[] = [];
-	if (feedTitles.length < 8) {
+	if (feed.titles.length < 8) {
 		const archiveUrl = discoverSameOriginArchive(html, url);
 		if (archiveUrl) {
 			try {
@@ -749,9 +807,10 @@ export async function evaluateSitePage(html: string, url: string): Promise<SiteE
 			}
 		}
 	}
-	return evaluateSiteHTML(html, url, [...feedTitles, ...archiveTitles], {
-		feedPosts: feedTitles.length,
-		archivePosts: archiveTitles.length
+	return evaluateSiteHTML(html, url, [...feed.titles, ...archiveTitles], {
+		feedPosts: feed.titles.length,
+		archivePosts: archiveTitles.length,
+		latestPublishedAt: feed.latestPublishedAt
 	});
 }
 
