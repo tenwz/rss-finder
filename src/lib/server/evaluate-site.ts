@@ -1,4 +1,5 @@
 import { load } from 'cheerio/slim';
+import { readResponseText } from './read-response.js';
 
 export interface SiteEvaluationSignals {
 	generator: string | null;
@@ -29,11 +30,11 @@ interface ThemeFeature {
 	weight: number;
 }
 
-const REQUEST_TIMEOUT_MS = 12_000;
-const MAX_PAGE_CHARACTERS = 500_000;
-const MAX_FEED_CHARACTERS = 1_000_000;
-const MAX_SAMPLED_POSTS = 20;
-const MAX_ANALYZED_POSTS = 50;
+const REQUEST_TIMEOUT_MS = 8_000;
+const MAX_PAGE_CHARACTERS = 300_000;
+const MAX_FEED_CHARACTERS = 300_000;
+const MAX_SAMPLED_POSTS = 16;
+const MAX_ANALYZED_POSTS = 30;
 
 const THEME_FEATURES: ThemeFeature[] = [
 	{ name: 'live2d', pattern: /live2d|l2dwidget|waifu-tips|waifu\.css/i, weight: 35 },
@@ -625,7 +626,7 @@ async function fetchPage(url: string): Promise<{ url: string; html: string }> {
 
 	return {
 		url: response.url || url,
-		html: (await response.text()).slice(0, MAX_PAGE_CHARACTERS)
+		html: await readResponseText(response, MAX_PAGE_CHARACTERS)
 	};
 }
 
@@ -727,7 +728,7 @@ async function fetchFeedTitles(url: string): Promise<string[]> {
 		const finalUrl = new URL(response.url || url);
 		if (finalUrl.origin !== new URL(url).origin) return [];
 		const contentType = response.headers.get('content-type') || '';
-		const body = (await response.text()).slice(0, MAX_FEED_CHARACTERS);
+		const body = await readResponseText(response, MAX_FEED_CHARACTERS);
 		return parseFeedTitles(body, contentType);
 	} catch {
 		return [];

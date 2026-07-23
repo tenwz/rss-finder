@@ -123,6 +123,24 @@ describe('findLinks', () => {
 		});
 	});
 
+	it('bounds the number of feed and quality checks on a large blogroll', async () => {
+		const links = Array.from(
+			{ length: 13 },
+			(_, index) => `<li><a href="https://writer-${index + 1}.test/">Writer ${index + 1}</a></li>`
+		).join('');
+		mockPages({
+			'https://source.test/': {
+				body: `<main><h1>Blogroll</h1><h2>Blogs I read</h2><ul>${links}</ul></main>`
+			}
+		});
+
+		const result = await findLinks('https://source.test/');
+
+		expect(result.links).toHaveLength(12);
+		expect(result.links.map((link) => link.url)).not.toContain('https://writer-13.test/');
+		expect(evaluateSitePageMock).toHaveBeenCalledTimes(12);
+	});
+
 	it('includes homepage favicon and description without another fetch', async () => {
 		mockPages({
 			'https://source.test/': {

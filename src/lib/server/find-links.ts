@@ -8,6 +8,7 @@ import {
 } from 'feedfinder-ts';
 import { getDomain } from 'tldts';
 import { evaluateSitePage } from './evaluate-site.js';
+import { readResponseText } from './read-response.js';
 
 export interface DiscoveredLink {
 	title: string;
@@ -45,14 +46,14 @@ interface LinkCandidate extends DiscoveredLink {
 	order: number;
 }
 
-const REQUEST_TIMEOUT_MS = 10_000;
-const FEED_CHECK_TIMEOUT_MS = 6_000;
-const MAX_PAGE_CHARACTERS = 2_000_000;
-const MAX_FEED_PAGE_CHARACTERS = 500_000;
-const MAX_CANDIDATE_PAGES = 3;
-const MAX_FEED_CHECKS = 40;
-const FEED_CHECK_CONCURRENCY = 6;
-const EVALUATION_CONCURRENCY = 4;
+const REQUEST_TIMEOUT_MS = 8_000;
+const FEED_CHECK_TIMEOUT_MS = 5_000;
+const MAX_PAGE_CHARACTERS = 600_000;
+const MAX_FEED_PAGE_CHARACTERS = 250_000;
+const MAX_CANDIDATE_PAGES = 2;
+const MAX_FEED_CHECKS = 12;
+const FEED_CHECK_CONCURRENCY = 3;
+const EVALUATION_CONCURRENCY = 2;
 const MAX_RESULTS = 100;
 
 const RECOMMENDATION_PATTERNS = [
@@ -552,7 +553,7 @@ async function fetchPage(url: string): Promise<FetchedPage> {
 		throw new Error(`Target returned unsupported content type: ${contentType}`);
 	}
 
-	const html = (await response.text()).slice(0, MAX_PAGE_CHARACTERS);
+	const html = await readResponseText(response, MAX_PAGE_CHARACTERS);
 	return { url: response.url || url, html };
 }
 
@@ -573,7 +574,7 @@ async function discoverFeeds(url: string): Promise<FeedDiscovery | null> {
 		});
 		if (!response.ok) return null;
 
-		const body = (await response.text()).slice(0, MAX_FEED_PAGE_CHARACTERS);
+		const body = await readResponseText(response, MAX_FEED_PAGE_CHARACTERS);
 		const pageUrl = response.url || homepageUrl;
 		const page = { url: pageUrl, html: body };
 		const advertisedFeeds = deduplicateFeeds(
@@ -618,9 +619,22 @@ function createLimiter(concurrency: number) {
 	};
 }
 
-async function discoverQualifiedLinks(links: DiscoveredLink[]): Promise<DiscoveredLinkWithFeeds[]> {
+interface DiscoveryStats {
+	scannedCandidates: number;
+	feedCandidates: number;
+	evaluatedCandidates: number;
+}
+
+async function discoverQualifiedLinks(
+	links: DiscoveredLink[]
+): Promise<{ links: DiscoveredLinkWithFeeds[]; stats: DiscoveryStats }> {
 	const candidates = links.slice(0, MAX_FEED_CHECKS);
 	const results = new Array<DiscoveredLinkWithFeeds | null>(candidates.length).fill(null);
+	const stats: DiscoveryStats = {
+		scannedCandidates: candidates.length,
+		feedCandidates: 0,
+		evaluatedCandidates: 0
+	};
 	const evaluate = createLimiter(EVALUATION_CONCURRENCY);
 	let nextIndex = 0;
 
@@ -630,8 +644,10 @@ async function discoverQualifiedLinks(links: DiscoveredLink[]): Promise<Discover
 			const candidate = candidates[index];
 			const discovery = await discoverFeeds(candidate.url);
 			if (!discovery) continue;
+			stats.feedCandidates += 1;
 
 			try {
+				stats.evaluatedCandidates += 1;
 				const evaluation = await evaluate(() =>
 					evaluateSitePage(discovery.page.html, discovery.page.url)
 				);
@@ -651,10 +667,14 @@ async function discoverQualifiedLinks(links: DiscoveredLink[]): Promise<Discover
 	await Promise.all(
 		Array.from({ length: Math.min(FEED_CHECK_CONCURRENCY, candidates.length) }, () => worker())
 	);
-	return results.filter((result): result is DiscoveredLinkWithFeeds => result !== null);
+	return {
+		links: results.filter((result): result is DiscoveredLinkWithFeeds => result !== null),
+		stats
+	};
 }
 
 export async function findLinks(targetUrl: string): Promise<LinkDiscoveryResult> {
+	const startedAt = Date.now();
 	const homePage = await fetchPage(targetUrl);
 	const sources: DiscoveredLink[][] = [
 		extractRecommendedLinks(homePage.html, homePage.url, targetUrl, false)
@@ -674,5 +694,14 @@ export async function findLinks(targetUrl: string): Promise<LinkDiscoveryResult>
 		sources.push(extractRecommendedLinks(page.html, page.url, targetUrl, true));
 	}
 
-	return { links: await discoverQualifiedLinks(combineSources(sources)) };
+	const candidates = combineSources(sources);
+	const discovered = await discoverQualifiedLinks(candidates);
+	console.info('find-links completed', {
+		sourcePages: sources.length,
+		candidateCount: candidates.length,
+		...discovered.stats,
+		resultCount: discovered.links.length,
+		durationMs: Date.now() - startedAt
+	});
+	return { links: discovered.links };
 }
