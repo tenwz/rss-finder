@@ -1,4 +1,4 @@
-import { load } from 'cheerio/slim';
+import { load, type CheerioAPI } from 'cheerio/slim';
 import { readResponseText } from './read-response.js';
 
 export interface SiteEvaluationSignals {
@@ -136,8 +136,7 @@ function cleanText(value: string): string {
 	return value.replace(/\s+/g, ' ').trim();
 }
 
-function collectPostTitles(html: string, pageUrl: string): string[] {
-	const $ = load(html);
+function collectPostTitles($: CheerioAPI, pageUrl: string): string[] {
 	const titles: string[] = [];
 	const seen = new Set<string>();
 	const selectors = [
@@ -284,8 +283,7 @@ function collectPostTitles(html: string, pageUrl: string): string[] {
 	return titles;
 }
 
-function mainTextLength(html: string): number {
-	const $ = load(html);
+function mainTextLength($: CheerioAPI): number {
 	const scopes = $(
 		'main, [role="main"], #content, .content, .column-main, .l_main, #recent-posts, .post-list, .markdown-body'
 	).toArray();
@@ -297,8 +295,7 @@ function mainTextLength(html: string): number {
 	}, 0);
 }
 
-function historySignals(html: string): { span: number; latest: number | null } {
-	const $ = load(html);
+function historySignals($: CheerioAPI): { span: number; latest: number | null } {
 	const currentYear = new Date().getUTCFullYear();
 	const years = $('time[datetime], [class*="date"], [class*="time"]')
 		.map((_, element) => {
@@ -350,8 +347,7 @@ function repetitiveTitleCount(titles: string[]): number {
 	).length;
 }
 
-function themeSignals(html: string): { features: string[]; risk: number } {
-	const $ = load(html);
+function themeSignals($: CheerioAPI, html: string): { features: string[]; risk: number } {
 	const assets = $('script[src], link[href], footer a[href], [class*="footer"] a[href]')
 		.map((_, element) => $(element).attr('src') || $(element).attr('href') || '')
 		.get()
@@ -390,9 +386,8 @@ function themeSignals(html: string): { features: string[]; risk: number } {
 	};
 }
 
-function isClientRenderedShell(html: string, titles: string[], textLength: number): boolean {
+function isClientRenderedShell($: CheerioAPI, titles: string[], textLength: number): boolean {
 	if (titles.length > 0 || textLength >= 250) return false;
-	const $ = load(html);
 	const hasEmptyAppRoot = $('#app, #root, #__next')
 		.toArray()
 		.some((element) => $(element).children().length === 0 && cleanText($(element).text()) === '');
@@ -400,8 +395,7 @@ function isClientRenderedShell(html: string, titles: string[], textLength: numbe
 	return hasEmptyAppRoot && hasApplicationBundle;
 }
 
-function generatorName(html: string): string | null {
-	const $ = load(html);
+function generatorName($: CheerioAPI): string | null {
 	const generator = cleanText($('meta[name="generator"]').attr('content') || '');
 	return generator ? generator.slice(0, 80) : null;
 }
@@ -412,7 +406,10 @@ export function evaluateSiteHTML(
 	additionalTitles: string[] = [],
 	additionalSignals: { feedPosts?: number; archivePosts?: number } = {}
 ): SiteEvaluation {
-	const pageTitles = collectPostTitles(html, url);
+	// DOM parsing dominates this evaluator's CPU use. Keep one parsed document
+	// per page and share it across all signals instead of reparsing the same HTML.
+	const $ = load(html);
+	const pageTitles = collectPostTitles($, url);
 	const titles = Array.from(new Set([...pageTitles, ...additionalTitles])).slice(
 		0,
 		MAX_ANALYZED_POSTS
@@ -428,11 +425,11 @@ export function evaluateSiteHTML(
 	const selfHostingRatio = titles.length > 0 ? selfHostingPosts.length / titles.length : 0;
 	const operationalRatio = titles.length > 0 ? operationalPosts.length / titles.length : 0;
 	const repetitiveRatio = titles.length > 0 ? repetitivePosts / titles.length : 0;
-	const textLength = mainTextLength(html);
-	const history = historySignals(html);
-	const theme = themeSignals(html);
-	const generator = generatorName(html);
-	const clientRenderedShell = isClientRenderedShell(html, titles, textLength);
+	const textLength = mainTextLength($);
+	const history = historySignals($);
+	const theme = themeSignals($, html);
+	const generator = generatorName($);
+	const clientRenderedShell = isClientRenderedShell($, titles, textLength);
 	const reasons: string[] = [];
 	let score = 50;
 
@@ -746,7 +743,7 @@ export async function evaluateSitePage(html: string, url: string): Promise<SiteE
 		if (archiveUrl) {
 			try {
 				const archive = await fetchPage(archiveUrl);
-				archiveTitles = collectPostTitles(archive.html, archive.url);
+				archiveTitles = collectPostTitles(load(archive.html), archive.url);
 			} catch {
 				// The homepage evaluation remains usable when an archive page fails.
 			}
